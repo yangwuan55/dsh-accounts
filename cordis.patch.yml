@@ -1,0 +1,15 @@
+# dsh-accounts bundle patch — listed in web profile package.json bundles.
+# 同包三插件：核心（list/run/guard/prompt）+ 代填（browser 依赖）+ 网页管理页（webServer 依赖）。
+# id 不得重复（0.1.1-rc.2 起禁止重复 loader entry id）。
+#
+# headless 缺席语义（cordis inject 硬门禁）：
+# - dsh-accounts-fill inject 含 browser，headless 无 browser → 静默不加载；
+# - dsh-accounts-manage inject 含 webServer，headless 无 webServer → 静默不加载；
+# - 两者缺席均无报错，核心入口 account_list / credential_run / guard 不受影响。
+- insert:
+    - id: dsh-accounts
+      name: dsh-accounts
+    - id: dsh-accounts-fill
+      name: dsh-accounts/fill
+    - id: dsh-accounts-manage
+      name: dsh-accounts/manage

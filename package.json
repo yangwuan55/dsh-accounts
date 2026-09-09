@@ -1,0 +1,27 @@
+{
+  "name": "dsh-accounts",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./fill": "./lib/fill-plugin.js",
+    "./manage": "./lib/manage.js"
+  },
+  "version": "0.2.0",
+  "license": "MIT",
+  "author": "yangwuan55",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yangwuan55/dsh-accounts.git"
+  },
+  "keywords": ["dsh", "dsh-plugin", "credentials", "browser"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dsh": ">=0.1.1-rc.1 <0.2.0",
+      "profiles": ["web", "headless"]
+    }
+  }
+}
