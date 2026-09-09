@@ -15,18 +15,28 @@ DSH（DeepSeek Harness）凭据桥接插件：让 DSH 里的 AI 从凭据存储�
 
 要求 DSH >= 0.1.1-rc.1（web profile）。
 
+### 方式一：官方插件命令（推荐）
+
 ```bash
-# 1. 克隆到 DSH 插件目录
+dsh plugin --profile web add github:yangwuan55/dsh-accounts
+```
+
+一条命令完成全部注册：pnpm 从 GitHub 拉包装进 profile，并自动把 `dsh-accounts` 加进 `dsh.profile.bundles`（CLI 的 reconcile 逻辑：声明了 `dsh.bundle` 的依赖自动加入 layer 栈）。然后重启 DSH web 即可。
+
+### 方式二：本地开发安装（改源码场景）
+
+```bash
 git clone https://github.com/yangwuan55/dsh-accounts.git ~/.dsh/plugins/dsh-accounts
+dsh plugin --profile web add link:~/.dsh/plugins/dsh-accounts
+```
 
-# 2. 软链进你的 profile（以 web 为例；headless 只加载核心插件，无代填/管理页）
-ln -sfn ~/.dsh/plugins/dsh-accounts ~/.dsh/profiles/web/node_modules/dsh-accounts
+`link:` 规格让 pnpm 以软链安装（源码改动无需重新拉包，重启 DSH 生效）。
 
-# 3. 在 profile 的 package.json 注册
-#    dependencies 加： "dsh-accounts": "link:/Users/<你>/​.dsh/plugins/dsh-accounts"
-#    dsh.profile.bundles 加： "dsh-accounts"
-# 4. 校验 + 重启 DSH web
-dsh --profile web --dump-config   # 应看到 dsh-accounts / dsh-accounts-fill / dsh-accounts-manage 三条 entry
+### 校验
+
+```bash
+dsh --profile web --dump-config | grep dsh-accounts
+# 应看到 dsh-accounts / dsh-accounts-fill / dsh-accounts-manage 三条 entry
 ```
 
 重启后浏览器打开 `http://127.0.0.1:3080/dsh-accounts/` 录入第一个账号即可开始使用。headless profile 用法与注意事项见「部署形态」节。
