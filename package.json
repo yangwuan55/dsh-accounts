@@ -5,23 +5,42 @@
   "exports": {
     ".": "./lib/index.js",
     "./fill": "./lib/fill-plugin.js",
-    "./manage": "./lib/manage.js"
+    "./manage": "./lib/manage.js",
+    "./client": "./lib/settings-ui.js"
   },
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "MIT",
   "author": "yangwuan55",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yangwuan55/dsh-accounts.git"
   },
-  "keywords": ["dsh", "dsh-plugin", "credentials", "browser"],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "credentials",
+    "browser"
+  ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "compatibility": {
       "dsh": ">=0.1.1-rc.1 <0.2.0",
-      "profiles": ["web", "headless"]
+      "profiles": [
+        "web",
+        "headless"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "external": [
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
     }
   }
 }
