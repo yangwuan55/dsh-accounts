@@ -206,17 +206,18 @@ headless profile 无需配置——`dsh-accounts/manage` inject 含 `webServer`�
 
 ## 部署形态（web profile / headless profile）
 
-cordis 的 inject 是硬门禁：apply 里访问未注入的服务（哪怕只是存在性检查）会抛 "cannot get property without inject"；而把 browser 放进 inject 又会让 headless（无 browser 服务）下整个插件永不加载。因此本包采用**同包三插件 + 一个浏览器半边**架构（cordis 原生语义，一个包三个加载入口，浏览器半边挂在核心入口所属的包上）：
+cordis 的 inject 是硬门禁：apply 里访问未注入的服务（哪怕只是存在性检查）会抛 "cannot get property without inject"。但**注入一直未满足的 entry 会停在 pending，而 profile 启动的激活断言把 pending 判为失败**（`packages/boot/app-boot` 的 `assertEntriesActivated`）——所以把可选依赖写进 inject 等于要求该服务必须存在，否则整个 profile 起不来。因此核心与代填各自只 inject 真正必需的依赖，`lib/fill-plugin.js` 的 `browser` 改为运行时用 `ctx.get('browser')` 检测。本包采用**同包三插件 + 一个浏览器半边**架构（cordis 原生语义，一个包三个加载入口，浏览器半边挂在核心入口所属的包上）：
 
-| 入口 | name | inject | 注册内容 | headless 下 |
+| 入口 | name | inject | 注册内容 | 缺依赖时 |
 |---|---|---|---|---|
 | `lib/index.js`（`exports["."]`） | `dsh-accounts` | `tools, credentials, systemPrompt` | `account_list`、`credential_run`、guard、systemPrompt 指南 | ✅ 正常加载 |
-| `lib/fill-plugin.js`（`exports["./fill"]`） | `dsh-accounts/fill` | `tools, credentials, browser` | `account_fill` | ⏭️ 静默不加载（browser 缺失），`account_fill` 自然缺席 |
-| `lib/manage.js`（`exports["./manage"]`） | `dsh-accounts/manage` | `credentials, webServer` | `/dsh-accounts` 前缀路由（管理页 + API） | ⏭️ 静默不加载（webServer 缺失），管理页自然缺席 |
+| `lib/fill-plugin.js`（`exports["./fill"]`） | `dsh-accounts/fill` | `tools, credentials`（`browser` 运行时检测） | `account_fill`（仅有 `browser` 服务时注册） | ✅ 入口照常激活，只是不注册 `account_fill` |
+| `lib/manage.js`（`exports["./manage"]`） | `dsh-accounts/manage` | `credentials, webServer` | `/dsh-accounts` 前缀路由（管理页 + API） | ⏭️ 静默不加载（`webServer` 缺失），管理页自然缺席 |
 | `lib/settings-ui.js`（`exports["./client"]`） | `dsh-accounts`（浏览器半边） | 客户端侧：`slots` | 设置面板「账号」分区 | ⏭️ 不适用（`dsh.client.platform = web`，headless 无 Web 外壳） |
 
 - **headless 可用**：`account_list`、`credential_run`、guard（headless 永远无武装窗口，读取类工具自然放行）、prompt 指南。
-- **web 全量**：三个插件都加载，`account_fill`、管理页 `/dsh-accounts/` 与设置面板「账号」区都可用。
+- **web 全量**：三个插件都加载，`account_fill`、管理页 `/dsh-accounts/` 与设置面板「账号」区都可用（`account_fill` 需要有插件提供 `browser` 服务）。
+- **没有 provider 也能启动**：装了本包但没有插件提供 `browser` 服务的 web profile 照常启动，只是 `account_fill` 缺席——不再需要用户手工往 profile 的 `cordis.patch.yml` 加 `disabled: true`。
 - 浏览器半边（`lib/settings-ui.js`）是 DSH 客户端模块系统的 bundle（经典脚本 + `window.__ModuleLoader__.load`），依赖经 platform module 表解析：只用 `react` 与 `@deepseek-ai/dsh-client-ui-primitives`，**不新增任何 package 依赖，也不需要构建步骤**。它不发凭据请求之外的东西：读写都走本包 `/dsh-accounts/api`，账号值只在该次同源 fetch 中往返，不进模型上下文。
 - 三个插件通过 `guard.js` 的模块级单例 `getArmRegistry()` 共享武装窗口注册表（同一 node 进程模块缓存保证恒等）：guard 在核心插件注册，arm 在代填插件的代填成功路径调用。
 - 三个插件各自持有独立的 accounts 服务实例（无状态只读，互不影响）。
@@ -226,7 +227,7 @@ cordis 的 inject 是硬门禁：apply 里访问未注入的服务（哪怕只�
 
 ```bash
 cd ~/.dsh/plugins/dsh-accounts
-node --test test/*.test.mjs   # 单测（104 个：含 RFC 6238 附录 B 向量、三插件注册面、跨插件武装窗口、管理页围栏与管理 API）
+node --test test/*.test.mjs   # 单测（110 个：含 RFC 6238 附录 B 向量、三插件注册面、跨插件武装窗口、管理页围栏与管理 API、无 browser 时 fill 入口照常激活）
 node --check lib/index.js     # 语法检查（对每个 lib/*.js）
 ```
 

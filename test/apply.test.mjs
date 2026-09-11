@@ -57,6 +57,13 @@ function makeMockCtx({ withSystemPrompt = true, withBrowser = false } = {}) {
         guardFn = fn
       },
     },
+    // 可选服务的取法：cordis 的 ctx.get(name) 在服务缺席时返回 undefined。
+    // 代填插件用它检测 browser，因此 mock 必须实现（缺席即 undefined）。
+    get(name) {
+      if (name === 'browser') return browser
+      if (name === 'credentials') return credentials
+      return undefined
+    },
   }
   if (withSystemPrompt) ctx.systemPrompt = { section: (s) => sections.push(s) }
   if (browser) ctx.browser = browser
@@ -70,8 +77,8 @@ test('核心插件 inject 三元素：tools/credentials/systemPrompt（不含 br
   assert.equal(core.name, 'dsh-accounts')
 })
 
-test('代填插件 inject 三元素：tools/credentials/browser，name 用子路径语义', () => {
-  assert.deepEqual(fillPlugin.inject, ['tools', 'credentials', 'browser'])
+test('代填插件 inject 只含 tools/credentials：browser 改为运行时检测，不进硬门禁', () => {
+  assert.deepEqual(fillPlugin.inject, ['tools', 'credentials'])
   assert.equal(fillPlugin.name, 'dsh-accounts/fill')
 })
 
@@ -107,9 +114,19 @@ test('headless：account_list 执行正常（仅元数据，无值）', async ()
 
 // ---- 代填插件注册面 ----
 
-test('代填插件 apply（无 browser mock）正常注册 account_fill（browser 仅 execute 时访问）', () => {
-  const { ctx, registered } = makeMockCtx({ withBrowser: false })
-  fillPlugin.apply(ctx, {}) // apply 阶段不访问 ctx.browser —— inject 保证存在，单测无 mock 也应注册成功
+test('代填插件 apply（无 browser 服务）不注册 account_fill 且不抛错', () => {
+  const { ctx, registered, warns } = makeMockCtx({ withBrowser: false })
+  // 这一条正是修复的回归护栏：此前 browser 在 inject 里，装载器会把这个 entry 留在
+  // pending，而 profile 启动的激活断言把 pending 判为失败（整个 profile 起不来）。
+  // 现在 apply 必须正常返回、不注册工具、不抛错。
+  fillPlugin.apply(ctx, {})
+  assert.deepEqual(registered.map((d) => d.name), [])
+  assert.equal(warns.length, 0)
+})
+
+test('代填插件 apply（有 browser 服务）注册 account_fill', () => {
+  const { ctx, registered } = makeMockCtx({ withBrowser: true })
+  fillPlugin.apply(ctx, {})
   assert.deepEqual(registered.map((d) => d.name), ['account_fill'])
 })
 
