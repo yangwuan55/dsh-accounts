@@ -204,16 +204,17 @@ headless profile 无需配置——`dsh-accounts/manage` inject 含 `webServer`�
 
 ## 部署形态（web profile / headless profile）
 
-cordis 的 inject 是硬门禁：apply 里访问未注入的服务（哪怕只是存在性检查）会抛 "cannot get property without inject"；而把 browser 放进 inject 又会让 headless（无 browser 服务）下整个插件永不加载。因此本包采用**同包三插件**架构（cordis 原生语义，一个包三个加载入口）：
+cordis 的 inject 是硬门禁：apply 里访问未注入的服务（哪怕只是存在性检查）会抛 "cannot get property without inject"。但**注入一直未满足的 entry 会停在 pending，而 profile 启动的激活断言把 pending 判为失败**（`packages/boot/app-boot` 的 `assertEntriesActivated`）——所以把可选依赖写进 inject 等于要求该服务必须存在，否则整个 profile 起不来。因此核心与代填各自只 inject 真正必需的依赖，`lib/fill-plugin.js` 的 `browser` 改为运行时用 `ctx.get('browser')` 检测。本包采用**同包三插件**架构（cordis 原生语义，一个包三个加载入口）：
 
-| 入口 | name | inject | 注册内容 | headless 下 |
+| 入口 | name | inject | 注册内容 | 缺依赖时 |
 |---|---|---|---|---|
 | `lib/index.js`（`exports["."]`） | `dsh-accounts` | `tools, credentials, systemPrompt` | `account_list`、`credential_run`、guard、systemPrompt 指南 | ✅ 正常加载 |
-| `lib/fill-plugin.js`（`exports["./fill"]`） | `dsh-accounts/fill` | `tools, credentials, browser` | `account_fill` | ⏭️ 静默不加载（browser 缺失），`account_fill` 自然缺席 |
-| `lib/manage.js`（`exports["./manage"]`） | `dsh-accounts/manage` | `credentials, webServer` | `/dsh-accounts` 前缀路由（管理页 + API） | ⏭️ 静默不加载（webServer 缺失），管理页自然缺席 |
+| `lib/fill-plugin.js`（`exports["./fill"]`） | `dsh-accounts/fill` | `tools, credentials`（`browser` 运行时检测） | `account_fill`（仅有 `browser` 服务时注册） | ✅ 入口照常激活，只是不注册 `account_fill` |
+| `lib/manage.js`（`exports["./manage"]`） | `dsh-accounts/manage` | `credentials, webServer` | `/dsh-accounts` 前缀路由（管理页 + API） | ⏭️ 静默不加载（`webServer` 缺失），管理页自然缺席 |
 
 - **headless 可用**：`account_list`、`credential_run`、guard（headless 永远无武装窗口，读取类工具自然放行）、prompt 指南。
-- **web 全量**：三个插件都加载，`account_fill` 与管理页 `/dsh-accounts/` 可用。
+- **web 全量**：三个插件都加载，`account_fill` 与管理页 `/dsh-accounts/` 可用（`account_fill` 需要有插件提供 `browser` 服务）。
+- **没有 provider 也能启动**：装了本包但没有插件提供 `browser` 服务的 web profile 照常启动，只是 `account_fill` 缺席——不再需要用户手工往 profile 的 `cordis.patch.yml` 加 `disabled: true`。
 - 三个插件通过 `guard.js` 的模块级单例 `getArmRegistry()` 共享武装窗口注册表（同一 node 进程模块缓存保证恒等）：guard 在核心插件注册，arm 在代填插件的代填成功路径调用。
 - 三个插件各自持有独立的 accounts 服务实例（无状态只读，互不影响）。
 - 管理页写路径直接走 `credentials.modifyRecord` / `deleteRecord`（用户本人操作），不经 accounts 服务；工具层保持只读纪律不变。
