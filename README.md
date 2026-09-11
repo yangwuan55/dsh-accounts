@@ -39,7 +39,7 @@ dsh --profile web --dump-config | grep dsh-accounts
 # 应看到 dsh-accounts / dsh-accounts-fill / dsh-accounts-manage 三条 entry
 ```
 
-重启后浏览器打开 `http://127.0.0.1:3080/dsh-accounts/` 录入第一个账号即可开始使用。headless profile 用法与注意事项见「部署形态」节。
+重启后，web profile 下有两种录入入口：**设置面板 →「账号」**（推荐，原生界面），或浏览器打开 `http://127.0.0.1:3080/dsh-accounts/`（独立管理页）。headless profile 用法与注意事项见「部署形态」节。
 
 ## 模型可见工具
 
@@ -88,9 +88,11 @@ payload = {
 
 ## 账号录入步骤
 
-**方式一：管理页（推荐，web profile 下）** —— 打开 `http://127.0.0.1:3080/dsh-accounts/`，可视化增删改查，保存即写入 credentials（无需手工编辑 YAML）。详见「管理页」节。
+**方式一：设置面板「账号」区（推荐，web profile 下）** —— 重启 dsh web 后打开「设置 → 账号」。分区用 DSH 原生组件渲染，增删改查、域名白名单、字段值（默认打码，可临时显示）都在这里完成，保存即写入 credentials。
 
-**方式二：手工编辑 YAML**：
+**方式二：管理页** —— 打开 `http://127.0.0.1:3080/dsh-accounts/`，同一套 API 的独立页面（脚本友好、可直连 curl）。详见「管理页」节。两者并存，改哪个都会立刻反映到另一个。
+
+**方式三：手工编辑 YAML**：
 
 1. 编辑 `~/.dsh/.credentials.yaml`（credentials-local 托管，0600），在 `records:` 段追加 grant 记录。示例（全部假值）：
 
@@ -204,16 +206,18 @@ headless profile 无需配置——`dsh-accounts/manage` inject 含 `webServer`�
 
 ## 部署形态（web profile / headless profile）
 
-cordis 的 inject 是硬门禁：apply 里访问未注入的服务（哪怕只是存在性检查）会抛 "cannot get property without inject"；而把 browser 放进 inject 又会让 headless（无 browser 服务）下整个插件永不加载。因此本包采用**同包三插件**架构（cordis 原生语义，一个包三个加载入口）：
+cordis 的 inject 是硬门禁：apply 里访问未注入的服务（哪怕只是存在性检查）会抛 "cannot get property without inject"；而把 browser 放进 inject 又会让 headless（无 browser 服务）下整个插件永不加载。因此本包采用**同包三插件 + 一个浏览器半边**架构（cordis 原生语义，一个包三个加载入口，浏览器半边挂在核心入口所属的包上）：
 
 | 入口 | name | inject | 注册内容 | headless 下 |
 |---|---|---|---|---|
 | `lib/index.js`（`exports["."]`） | `dsh-accounts` | `tools, credentials, systemPrompt` | `account_list`、`credential_run`、guard、systemPrompt 指南 | ✅ 正常加载 |
 | `lib/fill-plugin.js`（`exports["./fill"]`） | `dsh-accounts/fill` | `tools, credentials, browser` | `account_fill` | ⏭️ 静默不加载（browser 缺失），`account_fill` 自然缺席 |
 | `lib/manage.js`（`exports["./manage"]`） | `dsh-accounts/manage` | `credentials, webServer` | `/dsh-accounts` 前缀路由（管理页 + API） | ⏭️ 静默不加载（webServer 缺失），管理页自然缺席 |
+| `lib/settings-ui.js`（`exports["./client"]`） | `dsh-accounts`（浏览器半边） | 客户端侧：`slots` | 设置面板「账号」分区 | ⏭️ 不适用（`dsh.client.platform = web`，headless 无 Web 外壳） |
 
 - **headless 可用**：`account_list`、`credential_run`、guard（headless 永远无武装窗口，读取类工具自然放行）、prompt 指南。
-- **web 全量**：三个插件都加载，`account_fill` 与管理页 `/dsh-accounts/` 可用。
+- **web 全量**：三个插件都加载，`account_fill`、管理页 `/dsh-accounts/` 与设置面板「账号」区都可用。
+- 浏览器半边（`lib/settings-ui.js`）是 DSH 客户端模块系统的 bundle（经典脚本 + `window.__ModuleLoader__.load`），依赖经 platform module 表解析：只用 `react` 与 `@deepseek-ai/dsh-client-ui-primitives`，**不新增任何 package 依赖，也不需要构建步骤**。它不发凭据请求之外的东西：读写都走本包 `/dsh-accounts/api`，账号值只在该次同源 fetch 中往返，不进模型上下文。
 - 三个插件通过 `guard.js` 的模块级单例 `getArmRegistry()` 共享武装窗口注册表（同一 node 进程模块缓存保证恒等）：guard 在核心插件注册，arm 在代填插件的代填成功路径调用。
 - 三个插件各自持有独立的 accounts 服务实例（无状态只读，互不影响）。
 - 管理页写路径直接走 `credentials.modifyRecord` / `deleteRecord`（用户本人操作），不经 accounts 服务；工具层保持只读纪律不变。
