@@ -8,7 +8,7 @@
     "./manage": "./lib/manage.js",
     "./client": "./lib/settings-ui.js"
   },
-  "version": "0.3.0",
+  "version": "0.3.1",
   "license": "MIT",
   "author": "yangwuan55",
   "repository": {
