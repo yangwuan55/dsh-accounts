@@ -1,6 +1,6 @@
 /**
  * apply 级单测（同包双插件架构）：
- * - 核心插件 lib/index.js：inject=['tools','credentials','systemPrompt']，注册 account_list/credential_run/guard/prompt 段，不注册 account_fill；
+ * - 核心插件 lib/index.js：inject=['tools','credentials','systemPrompt']，注册 account_list/credential_run/credential_request/guard/prompt 段，不注册 account_fill；
  * - 代填插件 lib/fill-plugin.js：inject=['tools','credentials','browser']，只注册 account_fill；
  * - getArmRegistry 模块级单例：两个插件共享同一武装窗口（guard 在核心、arm 在代填）；
  * - headless 语义：核心插件在无 browser ctx 下正常注册；代填插件 apply 也不依赖 browser（browser 仅 execute 时访问）。
@@ -36,7 +36,8 @@ function makeMockCtx({ withSystemPrompt = true, withBrowser = false } = {}) {
           return [{ url: 'https://test.example.com/login', active: true }]
         },
         async detectChallenge() {
-          return undefined
+          // 宿主真实形状（对象，含 blocked），不是 undefined
+          return { blocked: false }
         },
         async setValue() {},
         async click() {},
@@ -84,10 +85,10 @@ test('代填插件 inject 只含 tools/credentials：browser 改为运行时检�
 
 // ---- 核心插件注册面 ----
 
-test('核心 apply：注册 account_list + credential_run + guard，不注册 account_fill，prompt 段注册', () => {
+test('核心 apply：注册 account_list + credential_run + credential_request + guard，不注册 account_fill，prompt 段注册', () => {
   const { ctx, registered, getGuard, sections } = makeMockCtx()
   core.apply(ctx, {})
-  assert.deepEqual(registered.map((d) => d.name).sort(), ['account_list', 'credential_run'])
+  assert.deepEqual(registered.map((d) => d.name).sort(), ['account_list', 'credential_request', 'credential_run'])
   assert.equal(typeof getGuard(), 'function')
   assert.equal(sections.length, 1)
   assert.equal(sections[0].name, 'accounts:guidance')
@@ -97,7 +98,7 @@ test('核心 apply：注册 account_list + credential_run + guard，不注册 ac
 test('headless 语义：核心插件在无 browser ctx 下正常注册（ctx.browser 完全缺席）', () => {
   const { ctx, registered, getGuard, sections } = makeMockCtx({ withBrowser: false })
   core.apply(ctx, {}) // 不得因 browser 缺失抛错或跳过
-  assert.deepEqual(registered.map((d) => d.name).sort(), ['account_list', 'credential_run'])
+  assert.deepEqual(registered.map((d) => d.name).sort(), ['account_list', 'credential_request', 'credential_run'])
   assert.equal(typeof getGuard(), 'function')
   assert.equal(sections.length, 1)
 })
@@ -142,10 +143,11 @@ test('代填插件执行链路：account_fill 真跑通并 arm 到共享单例',
   assert.equal(result.submitted, false)
   // 真值绝不出现在结果
   assert.ok(!JSON.stringify(result).includes('fake-user'))
-  // arm 落在共享单例上（sessionId = mock browser.open 的返回值 session-agent-1）
+  // arm 落在共享单例上，键是 **agent 作用域**（exec.agent?.id），不是浏览器会话 id
   const registry = getArmRegistry()
-  assert.equal(registry.isArmed('session-agent-1'), true)
-  registry.disarm('session-agent-1') // 清理，避免影响其他用例
+  assert.equal(registry.isArmed('agent-1'), true)
+  assert.equal(registry.isArmed('session-agent-1'), false, '浏览器会话 id 不该是作用域键')
+  registry.disarm('agent-1') // 清理，避免影响其他用例
 })
 
 // ---- 跨插件共享武装窗口（单例身份 + 功能） ----
@@ -164,18 +166,20 @@ test('跨插件功能：核心 guard 拦截代填插件 arm 的窗口', async ()
   const fill = fillCtx.registered.find((d) => d.name === 'account_fill')
 
   // 未武装：放行
-  assert.equal(guard({ name: 'browser_snapshot' }), undefined)
+  assert.equal(guard({ name: 'browser_snapshot', agent: { id: 'agent-x' } }), undefined)
 
   // 代填插件 arm（经共享单例）
   await fill.execute(
     { account: 'test-site', mapping: [{ selector: '#user', field: 'username' }] },
     { agent: { id: 'agent-x' } },
   )
-  // 核心插件的 guard 拦截读取类工具 —— 证明两个插件拿到同一注册表
+  // 核心插件的 guard 拦截**同一会话**的读取类工具 —— 证明两个插件拿到同一注册表
   for (const tool of ['browser_get_value', 'browser_execute', 'browser_a11y', 'browser_snapshot', 'browser_scrape']) {
-    const reason = guard({ name: tool })
+    const reason = guard({ name: tool, agent: { id: 'agent-x' } })
     assert.ok(typeof reason === 'string' && reason.includes('dsh-accounts'), `${tool} 应被跨插件拦截`)
   }
-  getArmRegistry().disarm('session-agent-x') // 清理
-  assert.equal(guard({ name: 'browser_snapshot' }), undefined)
+  // 别的会话不受影响（0.3.0 会掐掉全进程，这里锁死作用域隔离）
+  assert.equal(guard({ name: 'browser_snapshot', agent: { id: 'agent-y' } }), undefined)
+  getArmRegistry().disarm('agent-x') // 清理
+  assert.equal(guard({ name: 'browser_snapshot', agent: { id: 'agent-x' } }), undefined)
 })

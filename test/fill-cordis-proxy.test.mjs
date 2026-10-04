@@ -16,7 +16,8 @@ function makeBrowserSvc() {
       return [{ url: 'https://test.example.com/login', active: true }]
     },
     async detectChallenge() {
-      return undefined
+      // 宿主真实形状（对象，含 blocked），不是 undefined
+      return { blocked: false }
     },
     async setValue() {},
     async click() {},
@@ -93,6 +94,8 @@ test('cordis 代理：apply 注册 account_fill 且 execute 全程不抛并成�
   assert.equal(result.submitted, false)
   assert.ok(!JSON.stringify(result).includes('fake-user'))
   const registry = getArmRegistry()
-  assert.equal(registry.isArmed('session-agent-cordis'), true)
-  registry.disarm('session-agent-cordis')
+  // 作用域键是 agentId，不是浏览器会话 id
+  assert.equal(registry.isArmed('agent-cordis'), true)
+  assert.equal(registry.isArmed('session-agent-cordis'), false)
+  registry.disarm('agent-cordis')
 })

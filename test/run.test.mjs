@@ -9,7 +9,11 @@ import { createRunService } from '../lib/run.js'
 function makeCtx(envAccount, extra = {}) {
   const credentials = {
     async listRecords() {
-      return [{ key: 'dsh-accounts/cli-test', kind: 'api-key' }, { key: 'dsh-accounts/plain', kind: 'api-key' }]
+      return [
+        { key: 'dsh-accounts/cli-test', kind: 'api-key' },
+        { key: 'dsh-accounts/plain', kind: 'api-key' },
+        { key: 'dsh-accounts/token-only', kind: 'api-key' },
+      ]
     },
     async readRecord(key) {
       if (key === 'dsh-accounts/cli-test') {
@@ -23,6 +27,10 @@ function makeCtx(envAccount, extra = {}) {
       }
       if (key === 'dsh-accounts/plain') {
         return { kind: 'grant', payload: { kind: 'account', fields: { username: 'fake-user' } } }
+      }
+      if (key === 'dsh-accounts/token-only') {
+        // 单值令牌账号：只有 value、没有 env —— 0.3.0 下完全无法注入
+        return { kind: 'grant', payload: { kind: 'secret', value: 'fake-single-token-7777' } }
       }
       return undefined
     },
@@ -123,12 +131,40 @@ test('envKeys 无交集：报错并列出可注入键名（仅键名）', async 
   assert.ok(!result.error.includes('fake-token'))
 })
 
-test('无 env 映射的账号：报错并列出可注入键（空）', async () => {
+test('无可注入键的账号：报错并列出可注入键（空）', async () => {
   const { ctx } = makeCtx()
   const run = makeRun(ctx)
   const result = await run({ accountId: 'plain', command: 'whatever' })
-  assert.ok(result.error.includes('没有 "env" 映射'))
+  assert.ok(result.error.includes('没有任何可注入的键'))
   assert.deepEqual(result.injectableKeys, [])
+})
+
+test('单值令牌账号（kind=secret）现在能注入了，键为 DSH_ACCOUNT_<ID>', async () => {
+  // 0.3.0 的洞：secret 账号只有一个 value、没有 env，credential_run 直接拒绝。
+  // 0.4.0 起合成一个稳定键 DSH_ACCOUNT_TOKEN_ONLY。
+  const { ctx } = makeCtx()
+  const run = makeRun(ctx)
+  const result = await run({ accountId: 'token-only', command: '/usr/bin/env' })
+  assert.equal(result.error, undefined, 'secret 账号不该再被拒')
+  // 成功返回里也要报出注入了哪些键（只有键名），模型才知道下次该用什么
+  assert.deepEqual(result.injectedKeys, ['DSH_ACCOUNT_TOKEN_ONLY'])
+  assert.equal(result.synthesizedEnvKey, 'DSH_ACCOUNT_TOKEN_ONLY')
+  // 值确实进了子进程环境，且已从输出里脱敏
+  assert.ok(result.stdout.includes('DSH_ACCOUNT_TOKEN_ONLY='), '子进程应拿到合成键')
+  assert.ok(!result.stdout.includes('fake-single-token-7777'), '值不该出现在返回给模型的 stdout 里')
+  assert.ok(result.stdout.includes('[REDACTED]'))
+})
+
+test('secret 账号 + 指定 envKeys：可用合成键精确注入', async () => {
+  const { ctx } = makeCtx()
+  const run = makeRun(ctx)
+  const result = await run({
+    accountId: 'token-only',
+    command: '/usr/bin/env',
+    envKeys: ['DSH_ACCOUNT_TOKEN_ONLY'],
+  })
+  assert.equal(result.error, undefined)
+  assert.ok(result.stdout.includes('DSH_ACCOUNT_TOKEN_ONLY='))
 })
 
 test('账号不存在：报错含可用账号 id', async () => {

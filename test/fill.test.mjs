@@ -48,8 +48,15 @@ function mockCredentials() {
   }
 }
 
-/** mock browser */
-function mockBrowser({ url = 'https://test.example.com/login', challenge = undefined } = {}) {
+/**
+ * mock browser
+ *
+ * `challenge` 的默认值必须是 **DSH 真实返回的形状** { blocked: false }，而不是
+ * undefined ——宿主签名是 detectChallenge(): Promise<BrowserChallenge>，永远返回一个
+ * 对象。0.3.0 用 undefined 当默认值，等于替代码圆了「判据写错」这个 bug：无挑战时
+ * 该测的是「拿到一个 blocked:false 的对象，照样要代填」。
+ */
+function mockBrowser({ url = 'https://test.example.com/login', challenge = { blocked: false } } = {}) {
   const calls = { setValue: [], click: [], key: [], open: 0 }
   return {
     calls,
@@ -117,9 +124,12 @@ test('fill 成功：setValue 注入真值（不外泄）、返回只有 selector
   const injected = browser.calls.setValue.map((c) => c.request.value)
   assert.ok(injected.includes('fake-user') && injected.includes('fake-pass-1234'))
   assert.ok(!JSON.stringify(result).includes('fake-pass'))
-  // 武装以解析到的 sessionId（mock 回退自开 → self-opened-agent-1）为键
-  assert.ok(armRegistry.isArmed('self-opened-agent-1'))
-  assert.ok(armRegistry.activeWindow(), '任意会话的武装窗口可被 guard 感知')
+  // 武装以 **agent 作用域**（taskKey = exec.agent?.id）为键，不是浏览器会话 id：
+  // guard 回调按 execution.agent?.id 查同一把键。用 sessionId 武装会让本会话永远查不到。
+  assert.ok(armRegistry.isArmed('agent-1'), '应以 agent 作用域武装')
+  assert.equal(armRegistry.isArmed('self-opened-agent-1'), false, '浏览器会话 id 不该是作用域键')
+  assert.equal(armRegistry.activeWindow('agent-1').sessionId, 'agent-1')
+  assert.equal(armRegistry.activeWindow('other-agent'), undefined, '别的作用域不该看到本窗口')
 })
 
 test('guard：武装窗口内拦截读取类工具，窗口外放行', async () => {
@@ -128,21 +138,35 @@ test('guard：武装窗口内拦截读取类工具，窗口外放行', async () 
   const guard = createGuardCallback(armRegistry)
 
   // 未武装 → 放行
-  assert.equal(guard({ name: 'browser_get_value' }), undefined)
+  assert.equal(guard({ name: 'browser_get_value', agent: { id: 'agent-1' } }), undefined)
 
   await fill({ accountId: 'test-site', mapping: MAPPING, agentId: 'agent-1' })
-  // 武装中 → 拦截并给出理由（含等待秒数）
+
+  // 同一会话武装中 → 拦截并给出理由（含等待秒数）
   for (const tool of ['browser_get_value', 'browser_execute', 'browser_a11y', 'browser_snapshot', 'browser_scrape']) {
-    const reason = guard({ name: tool })
-    assert.ok(typeof reason === 'string' && reason.includes('dsh-accounts'), `${tool} 应被拦截`)
+    const reason = guard({ name: tool, agent: { id: 'agent-1' } })
+    assert.ok(typeof reason === 'string' && reason.includes('dsh-accounts'), `${tool} 应在本会话被拦截`)
   }
+
+  // **别的会话完全不受影响**（0.3.0 的元凶：一次代填掐掉全进程的浏览器工具）
+  for (const tool of ['browser_get_value', 'browser_execute', 'browser_a11y', 'browser_snapshot', 'browser_scrape']) {
+    assert.equal(
+      guard({ name: tool, agent: { id: 'agent-2' } }),
+      undefined,
+      `${tool} 不该被别的会话的武装窗口拦到`,
+    )
+  }
+
+  // 拿不到 agent 身份 → 放行（不能因为没身份就一锅端）
+  assert.equal(guard({ name: 'browser_get_value' }), undefined)
+
   // 非名单工具 → 放行
-  assert.equal(guard({ name: 'browser_click' }), undefined)
-  assert.equal(guard({ name: 'browser_navigate' }), undefined)
+  assert.equal(guard({ name: 'browser_click', agent: { id: 'agent-1' } }), undefined)
+  assert.equal(guard({ name: 'browser_navigate', agent: { id: 'agent-1' } }), undefined)
 
   // 窗口过期（默认 120s 后）→ 放行
   clock.advance(121_000)
-  assert.equal(guard({ name: 'browser_snapshot' }), undefined)
+  assert.equal(guard({ name: 'browser_snapshot', agent: { id: 'agent-1' } }), undefined)
 })
 
 test('disarm 后 guard 放行；activeWindow 报告剩余时间', async () => {
@@ -150,10 +174,10 @@ test('disarm 后 guard 放行；activeWindow 报告剩余时间', async () => {
   const { armRegistry, fill } = makeFillWithAccounts({ clock })
   const guard = createGuardCallback(armRegistry)
   await fill({ accountId: 'test-site', mapping: MAPPING, agentId: 'agent-1' })
-  const win = armRegistry.activeWindow()
+  const win = armRegistry.activeWindow('agent-1')
   assert.ok(win && win.remainingMs > 0 && win.remainingMs <= 120_000)
-  armRegistry.disarm('self-opened-agent-1')
-  assert.equal(guard({ name: 'browser_get_value' }), undefined)
+  armRegistry.disarm('agent-1')
+  assert.equal(guard({ name: 'browser_get_value', agent: { id: 'agent-1' } }), undefined)
 })
 
 test('fill 后 arm TTL 可调（armedWindowMs）', async () => {
@@ -165,17 +189,40 @@ test('fill 后 arm TTL 可调（armedWindowMs）', async () => {
   const svc = createFillService({ ctx, accounts, armRegistry, config: { armedWindowMs: 5000 } })
   await svc.fill({ accountId: 'test-site', mapping: MAPPING, agentId: 'a' })
   clock.advance(6_000)
-  assert.equal(armRegistry.isArmed('self-opened-a'), false)
+  assert.equal(armRegistry.isArmed('a'), false)
 })
 
-test('CAPTCHA：detectChallenge 命中 → 不填任何字段', async () => {
-  const browser = mockBrowser({ challenge: { type: 'cloudflare' } })
+test('CAPTCHA：detectChallenge 报 blocked=true → 不填任何字段', async () => {
+  const browser = mockBrowser({
+    challenge: { blocked: true, kind: 'cloudflare', reason: 'Just a moment' },
+  })
   const { fill, armRegistry } = makeFillWithAccounts({ browser })
   const result = await fill({ accountId: 'test-site', mapping: MAPPING, agentId: 'a' })
   assert.deepEqual(result.filled, [])
   assert.equal(result.challenge, 'needs-human')
+  assert.equal(result.challengeKind, 'cloudflare')
+  assert.equal(result.challengeReason, 'Just a moment')
   assert.equal(browser.calls.setValue.length, 0)
   assert.equal(armRegistry.isArmed('default'), false)
+})
+
+test('无验证码：detectChallenge 返回 { blocked: false } → 照常代填（0.3.0 回归门）', async () => {
+  // 0.3.0 写的是 if (challenge)，而宿主返回的是对象，于是每次代填都被误杀成
+  // needs-human。这条锁死「对象为真但 blocked 为假」这条最常见的路径。
+  const browser = mockBrowser({ challenge: { blocked: false } })
+  const { fill } = makeFillWithAccounts({ browser })
+  const result = await fill({ accountId: 'test-site', mapping: MAPPING, agentId: 'a' })
+  assert.equal(result.challenge, undefined, '没有验证码时不该返回 needs-human')
+  assert.equal(result.filled.length, MAPPING.length, '没有验证码时必须把字段都填上')
+  assert.equal(browser.calls.setValue.length, MAPPING.length)
+})
+
+test('旧宿主返回 undefined（无挑战）→ 同样照常代填', async () => {
+  const browser = mockBrowser({ challenge: undefined })
+  const { fill } = makeFillWithAccounts({ browser })
+  const result = await fill({ accountId: 'test-site', mapping: MAPPING, agentId: 'a' })
+  assert.equal(result.challenge, undefined)
+  assert.equal(result.filled.length, MAPPING.length)
 })
 
 test('域白名单：host 不匹配 → 拒绝', async () => {

@@ -3,7 +3,8 @@
 DSH（DeepSeek Harness）凭据桥接插件：让 DSH 里的 AI 从凭据存储（credentials-local）读取账号（用户名/密码/API key/TOTP），值**只在插件进程内存中流转**，用于：
 
 - **(a) 浏览器代填登录表单** —— `account_fill` 工具把账号值直接注入内置浏览器的输入框；
-- **(b) env 注入运行本地 CLI** —— `credential_run` 工具把 API key/token 以环境变量注入子进程。
+- **(b) env 注入运行本地 CLI** —— `credential_run` 工具把 API key/token 以环境变量注入子进程；
+- **(c) 带凭据发 HTTP 请求** —— `credential_request` 工具把账号 env 里的键注入指定请求头，用来调 API（0.4.0 新增）。
 
 此外提供**网页管理界面**（`/dsh-accounts/`，见下方「管理页」节），供用户本人增删改查账号。
 
@@ -47,7 +48,8 @@ dsh --profile web --dump-config | grep dsh-accounts
 |---|---|---|
 | `account_list` | 无 | `{ accounts: [{ id, kind, label?, hasTotp, domains? }], invalid?: [{ id, error }] }` |
 | `account_fill` | `{ account, mapping: [{ selector, field }], submit?: { selector?, key?: 'Enter' } }` | `{ filled: [selector…], failed?: [{ selector, reason }], submitted, challenge?: 'needs-human' }` |
-| `credential_run` | `{ account, command, args?, envKeys?, timeoutMs? }` | `{ exitCode, stdout, stderr, timedOut? }`（输出已脱敏） |
+| `credential_run` | `{ account, command, args?, envKeys?, timeoutMs? }` | `{ exitCode, stdout, stderr, injectedKeys?, synthesizedEnvKey?, timedOut? }`（输出已脱敏） |
+| `credential_request` | `{ account, url, method?, headers?, headerEnv?, body?, envKeys?, timeoutMs? }` | `{ status, location?, body, headersFromKeys?, injectableKeys, redacted }`（响应已脱敏，0.4.0 新增） |
 
 三个工具的返回值与错误路径**均不含任何值本身**，只有账号 id、字段名（键名）、CSS 选择器等元数据。
 
@@ -63,7 +65,7 @@ payload = {
   label?: string,                        # 人类可读描述（模型可见）
   domains?: string[],                    # host 后缀白名单，如 ['github.com']；account_fill 用
   fields?: { username?, password?, totpSecret?, [custom: string]: string },  # account 主体；值全为非空 string
-  env?: { [VAR: string]: string },       # credential_run 的注入源（任意 kind 都可声明，credential_run 只认这里的键）
+  env?: { [VAR: string]: string },       # credential_run / credential_request 的注入源（任意 kind 都可声明，只认这里的键）
   value?: string,                        # 仅 kind='secret'，非空 string
 }
 ```
@@ -75,6 +77,22 @@ payload = {
 - `domains` 每项为合法 host 片段（小写字母数字与点和连字符，不以 `-`/`.` 开头结尾，无连续点）；
 - 未知顶层字段抛错——错误信息只含字段名与账号 id，**绝不含值本身**；
 - `totpSecret` 存在时摘要里标 `hasTotp: true`。
+
+### credential_request 安全规则（0.4.0 新增）
+
+- **值不进模型**：模型只能指定「哪个请求头 用哪个 env 键」（`headerEnv: { Authorization: "API_TOKEN" }`），值由插件从账号 env 映射里取。
+- **不自动跟重定向**：3xx 原样返回并带上 `location`，由模型决定要不要重发。自动跟随等于把 `Authorization` 头带到攻击者指定的 host 上。
+- **域白名单**：账号声明了 `domains` 时，URL 的 host 必须命中（与 `account_fill` 同一条规则），否则拒绝且不发请求。
+- **只支持 http/https**：`file://` 等一律拒绝。
+- **响应脱敏**：账号的全部秘密值在返回给模型前替换为 `[REDACTED]`；响应超过 5 MB 直接掐断，超过 20000 字符截断并注明。
+
+### kind='secret' 的合成环境变量名（0.4.0 新增）
+
+单值令牌账号只有一个 `value`、没有 `env`，0.3.0 下 `credential_run` / `credential_request` 完全用不了——而这恰恰是存 API token 最自然的方式。0.4.0 起自动合成一个稳定键：
+
+    DSH_ACCOUNT_<ID 大写，非字母数字换成 _>
+
+例：账号 `my-token` → `DSH_ACCOUNT_MY_TOKEN`。账号 `env` 里已显式声明同名键时不覆盖（你写的优先）。运行结果里的 `synthesizedEnvKey` / `injectedKeys` 会把键名报给模型（只有键名，没有值），模型据此知道该引用什么。
 
 ### credential_run 注入规则
 
@@ -210,12 +228,12 @@ cordis 的 inject 是硬门禁：apply 里访问未注入的服务（哪怕只�
 
 | 入口 | name | inject | 注册内容 | 缺依赖时 |
 |---|---|---|---|---|
-| `lib/index.js`（`exports["."]`） | `dsh-accounts` | `tools, credentials, systemPrompt` | `account_list`、`credential_run`、guard、systemPrompt 指南 | ✅ 正常加载 |
+| `lib/index.js`（`exports["."]`） | `dsh-accounts` | `tools, credentials, systemPrompt` | `account_list`、`credential_run`、`credential_request`、guard、systemPrompt 指南 | ✅ 正常加载 |
 | `lib/fill-plugin.js`（`exports["./fill"]`） | `dsh-accounts/fill` | `tools, credentials`（`browser` 运行时检测） | `account_fill`（仅有 `browser` 服务时注册） | ✅ 入口照常激活，只是不注册 `account_fill` |
 | `lib/manage.js`（`exports["./manage"]`） | `dsh-accounts/manage` | `credentials, webServer` | `/dsh-accounts` 前缀路由（管理页 + API） | ⏭️ 静默不加载（`webServer` 缺失），管理页自然缺席 |
 | `lib/settings-ui.js`（`exports["./client"]`） | `dsh-accounts`（浏览器半边） | 客户端侧：`slots` | 设置面板「账号」分区 | ⏭️ 不适用（`dsh.client.platform = web`，headless 无 Web 外壳） |
 
-- **headless 可用**：`account_list`、`credential_run`、guard（headless 永远无武装窗口，读取类工具自然放行）、prompt 指南。
+- **headless 可用**：`account_list`、`credential_run`、`credential_request`、guard（headless 永远无武装窗口，读取类工具自然放行）、prompt 指南。
 - **web 全量**：三个插件都加载，`account_fill`、管理页 `/dsh-accounts/` 与设置面板「账号」区都可用（`account_fill` 需要有插件提供 `browser` 服务）。
 - **没有 provider 也能启动**：装了本包但没有插件提供 `browser` 服务的 web profile 照常启动，只是 `account_fill` 缺席——不再需要用户手工往 profile 的 `cordis.patch.yml` 加 `disabled: true`。
 - 浏览器半边（`lib/settings-ui.js`）是 DSH 客户端模块系统的 bundle（经典脚本 + `window.__ModuleLoader__.load`），依赖经 platform module 表解析：只用 `react` 与 `@deepseek-ai/dsh-client-ui-primitives`，**不新增任何 package 依赖，也不需要构建步骤**。它不发凭据请求之外的东西：读写都走本包 `/dsh-accounts/api`，账号值只在该次同源 fetch 中往返，不进模型上下文。
