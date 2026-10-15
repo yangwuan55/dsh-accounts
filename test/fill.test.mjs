@@ -301,6 +301,39 @@ test('会话复用：loadSessionsModule 提供 sessions 快照时不开新会话
   assert.ok(browser.calls.setValue.every((c) => c.sessionId === 'reused-session'))
 })
 
+test('跨任务复用：本任务无会话，但他会话当前页命中域白名单 → 复用他会话，绝不自开空白页（2026-10-15 ccopyright 回归门）', async () => {
+  const calls = { setValue: [], open: 0 }
+  const browser = {
+    async listTabs(sessionId) {
+      if (sessionId === 'other-task-session') return [{ url: 'https://test.example.com/login', active: true }]
+      return [{ url: 'about:blank', active: true }]
+    },
+    async detectChallenge() { return { blocked: false } },
+    async setValue(sessionId, request) { calls.setValue.push({ sessionId, request }) },
+    async click() { }, async key() { },
+    async open(label) { calls.open += 1; return 'self-opened-' + label },
+  }
+  const { fill } = makeFillWithAccounts({
+    browser,
+    loadSessionsModule: async () => ({ internals: { sessions: new Map([['other-task', 'other-task-session']]) } }),
+  })
+  const result = await fill({ accountId: 'test-site', mapping: MAPPING, agentId: 'agent-unknown' })
+  assert.equal(result.error, undefined, '不应报错: ' + result.error)
+  assert.equal(calls.open, 0, '不得自开新会话')
+  assert.ok(calls.setValue.every((c) => c.sessionId === 'other-task-session'))
+})
+
+test('他会话也不命中白名单 → 维持旧回退（自开并记日志），空白页由域检查给可行动报错', async () => {
+  const browser = mockBrowser({ url: 'https://other.example.org/' })
+  const { fill, logs } = makeFillWithAccounts({
+    browser,
+    loadSessionsModule: async () => ({ internals: { sessions: new Map([['other-task', 'other-session']]) } }),
+  })
+  const result = await fill({ accountId: 'test-site', mapping: MAPPING, agentId: 'agent-unknown' })
+  assert.ok(result.error === undefined || String(result.error).includes('白名单'))
+  assert.ok(logs.some((l) => l.includes('回退自开')) || browser.calls.open === 1)
+})
+
 test('会话回退：快照取不到 → ctx.browser.open 自开（记日志）', async () => {
   const browser = mockBrowser()
   const { fill, logs } = makeFillWithAccounts({

